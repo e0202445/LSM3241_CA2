@@ -1,0 +1,95 @@
+#starting from data directory
+#assess quality of the reads
+mkdir -p results/fastqc
+fastqc *.fq -o results/fastqc
+
+#to visualise quality of reads
+#cd results/fastqc
+#open *.html
+
+#to get summary
+cd results/fastqc
+
+for filename in *.zip; do
+unzip $filename
+done
+
+cd ../.. 
+mkdir -p docs
+cat results/fastqc/*/summary.txt > docs/fastq_summaries.txt
+
+
+#trimmomatic 
+TrimmomaticPE -threads 4 A0172875R_1.fq A0172875R_2.fq  \
+              A0172875R_1.trimmed.fastq A0172875R_1un.trimmed.fastq \
+              A0172875R_2.trimmed.fastq A0172875R_2un.trimmed.fastq \
+              SLIDINGWINDOW:4:20 MINLEN:25 ILLUMINACLIP:NexteraPE-PE.fa:2:40:15
+
+mkdir -p results/sam results/bam
+
+#indexing both genomes for alignment
+bowtie2-build ref_genomes/yeast_genome.fa,ref_genomes/transposon.fa genome/indexed_both
+
+
+#gzip trimmed sequences first
+cd results/trimmed
+
+gzip A0172875R_1.trimmed.fastq
+gzip A0172875R_2.trimmed.fastq
+
+cd../..
+
+#aligning sequences
+export BOWTIE2_INDEXES=$(pwd)/genome
+
+for file in results/trimmed/*1.trimmed.fastq.gz ; do
+	SRR=$(basename $file _1.trimmed.fastq.gz) #basename removes the directories and #'_1...' says that that part is not wanted to be included
+	echo running $SRR
+	bowtie2 -x indexed_both \
+     	--very-fast -p 4\
+     	-1 results/trimmed/${SRR}_1.trimmed.fastq.gz \
+     	-2 results/trimmed/${SRR}_2.trimmed.fastq.gz \
+     	-S results/sam/${SRR}.sam
+done
+
+#Use SamFlags to obtain reads of interest (improper pairs. mate and read mapped.)
+samtools view -b -F 1550 results/sam/A0172875R.sam -o results/bam/samflags.bam 
+samtools view -F 1550 results/sam/A0172875R.sam > results/sam/samflags.txt #for own ref
+
+#sort bam files by coordinates, usually sorted by chromosome number
+samtools sort results/bam/samflags.bam -o results/bam/samflags-sorted.bam
+
+#CONVERT BAM TO SAM, so as to visualise and use grep
+samtools view -h results/bam/samflags-sorted.bam > results/sam/samflags-sorted.sam
+samtools view -h results/bam/samflags-sorted.bam > results/sam/samflags-sorted.txt #for own ref
+
+#grep for those containing ty5
+grep -i ty5 results/sam/samflags-sorted.sam
+grep -i ty5 results/sam/samflags-sorted.sam > results/sam/ty5-samflags-sorted.txt #for own ref
+
+#grep for those containing ty5 and good MAPQ score
+grep -i ty5 results/sam/samflags-sorted.sam |grep -i -w 42 > results/sam/grep-samflags-sorted.sam #to convert and put in ucsc and igv
+grep -i ty5 results/sam/samflags-sorted.sam |grep -i -w 42 > results/sam/grep-samflags-sorted.txt #convert to text file to view
+
+grep -i ty5 results/sam/samflags-sorted.sam | grep -i -w 42 | cut -f3,4
+grep -i ty5 results/sam/samflags-sorted.sam | grep -i -w 42  | cut -f3,4 > results/sam/grep1.txt #for own ref
+
+grep -i ty5 results/sam/samflags-sorted.sam | grep -i -w 42 |cut -f3 | uniq -c #count ty5 and chromosome for own ref
+grep -i ty5 results/sam/samflags-sorted.sam | grep -i -w 42 |cut -f3 | uniq -c > results/sam/grep2.txt
+
+grep -i ty5 results/sam/samflags-sorted.sam | grep -i -w 42 |cut -f3,4 | grep chrXIV #see the chromsome only, for own ref
+
+#grep -f3 gives you the column
+#uniq -c is the number of occurence for each line
+
+#convert to bam then bedfile
+samtools view -H results/bam/samflags-sorted.bam > results/sam/header.sam #get headers
+cat results/sam/header.sam results/sam/grep-samflags-sorted.sam > results/sam/final.sam #cat headers and grep-ed results, as grep removed the headers
+cat results/sam/header.sam results/sam/grep-samflags-sorted.sam > results/sam/final.txt #for own ref, to view
+samtools view -S -b results/sam/final.sam > results/bam/final.bam #convert to bam
+
+bedtools bamtobed -i results/bam/final.bam > results/bed/final.bed #convert to bed
+bedtools bamtobed -i results/bam/final.bam > results/bed/final.txt #for own ref
+
+#make bai file 
+samtools index results/bam/final.bam
